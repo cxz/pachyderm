@@ -47,6 +47,28 @@ type ServeOptions struct {
 type ServeEnv struct {
 	// Default is 7070.
 	GRPCPort uint16 `env:"GRPC_PORT,default=7070"`
+	PeerPort uint16 // Port where pachd serves traffic to peer pachd nodes
+}
+
+// runServer is a helper function for Serve(). It takes a slice of
+// grpc.ServerOption and
+func runServer(grpcServer *grpc.Server, options ServeOptions, port uint16) error {
+	if options.Version != nil {
+		versionpb.RegisterAPIServer(grpcServer, version.NewAPIServer(options.Version, version.APIServerOptions{}))
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return err
+	}
+	if options.Cancel != nil {
+		go func() {
+			<-options.Cancel
+			if err := listener.Close(); err != nil {
+				fmt.Printf("listener.Close(): %v\n", err)
+			}
+		}()
+	}
+	return grpcServer.Serve(listener)
 }
 
 // Serve serves stuff.
@@ -61,7 +83,7 @@ func Serve(
 	if serveEnv.GRPCPort == 0 {
 		serveEnv.GRPCPort = 7070
 	}
-	serverOpts := []grpc.ServerOption{
+	peerOpts := []grpc.ServerOption{
 		grpc.MaxConcurrentStreams(math.MaxUint32),
 		grpc.MaxRecvMsgSize(options.MaxMsgSize),
 		grpc.MaxSendMsgSize(options.MaxMsgSize),
@@ -70,6 +92,7 @@ func Serve(
 			PermitWithoutStream: true,
 		}),
 	}
+	var publicOpts []grpc.ServerOption
 	if _, err := os.Stat(TLSVolumePath); err == nil {
 		certPath := path.Join(TLSVolumePath, TLSCertFile)
 		keyPath := path.Join(TLSVolumePath, TLSKeyFile)
@@ -77,26 +100,19 @@ func Serve(
 		if err != nil {
 			return fmt.Errorf("couldn't build transport creds: %v", err)
 		}
-		serverOpts := append(serverOpts,
-			grpc.Creds(transportCreds),
-		)
+		publicOpts = append(peerOpts, grpc.Creds(transportCreds))
+	} else {
+		publicOpts = peerOpts
 	}
-	grpcServer := grpc.NewServer(serverOpts...)
-	registerFunc(grpcServer)
-	if options.Version != nil {
-		versionpb.RegisterAPIServer(grpcServer, version.NewAPIServer(options.Version, version.APIServerOptions{}))
-	}
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", serveEnv.GRPCPort))
-	if err != nil {
+	// No TLS
+	peerServer := grpc.NewServer(peerOpts...)
+	registerFunc(peerServer)
+	if err := runServer(peerServer, options, serveEnv.PeerPort); err != nil {
 		return err
 	}
-	if options.Cancel != nil {
-		go func() {
-			<-options.Cancel
-			if err := listener.Close(); err != nil {
-				fmt.Printf("listener.Close(): %v\n", err)
-			}
-		}()
-	}
-	return grpcServer.Serve(listener)
+	// Might additionally contain TLS option
+	// publicServer := grpc.NewServer(publicOpts...)
+	publicServer := grpc.NewServer(peerOpts...)
+	registerFunc(publicServer)
+	return runServer(publicServer, options, serveEnv.GRPCPort)
 }

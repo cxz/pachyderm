@@ -64,7 +64,12 @@ func init() {
 }
 
 type appEnv struct {
-	Port                  uint16 `env:"PORT,default=650"`
+	// Ports served by Pachd
+	Port      uint16 `env:"PORT,default=650"`
+	PProfPort uint16 `env:"PPROF_PORT,default=651"`
+	HTTPPort  uint16 `env:"HTTP_PORT,default=652"`
+	PeerPort  uint16 `env:"PEER_PORT,default=653"`
+
 	NumShards             uint64 `env:"NUM_SHARDS,default=32"`
 	StorageRoot           string `env:"PACH_ROOT,default=/pach"`
 	StorageBackend        string `env:"STORAGE_BACKEND,default="`
@@ -109,7 +114,7 @@ func doReadinessCheck(appEnvObj interface{}) error {
 	if err != nil {
 		return err
 	}
-	pachClient, err := client.NewFromAddress(fmt.Sprintf("%s:%d", address, appEnv.Port))
+	pachClient, err := client.NewFromAddress(fmt.Sprintf("%s:%d", address, appEnv.PeerPort))
 	if err != nil {
 		return err
 	}
@@ -117,11 +122,11 @@ func doReadinessCheck(appEnvObj interface{}) error {
 }
 
 func doSidecarMode(appEnvObj interface{}) error {
+	appEnv := appEnvObj.(*appEnv)
 	debug.SetGCPercent(50)
 	go func() {
-		log.Println(http.ListenAndServe(":651", nil))
+		log.Println(http.ListenAndServe(fmt.Sprintf(":%d", appEnv.PProfPort), nil))
 	}()
-	appEnv := appEnvObj.(*appEnv)
 	switch appEnv.LogLevel {
 	case "debug":
 		log.SetLevel(log.DebugLevel)
@@ -162,7 +167,7 @@ func doSidecarMode(appEnvObj interface{}) error {
 	if err != nil {
 		return err
 	}
-	address = fmt.Sprintf("%s:%d", address, appEnv.Port)
+	address = fmt.Sprintf("%s:%d", address, appEnv.PeerPort)
 	pfsCacheSize, err := strconv.Atoi(appEnv.PFSCacheSize)
 	if err != nil {
 		return err
@@ -213,15 +218,15 @@ func doSidecarMode(appEnvObj interface{}) error {
 		},
 		grpcutil.ServeEnv{
 			GRPCPort: appEnv.Port,
+			PeerPort: appEnv.PeerPort,
 		},
 	)
 }
 
 func doFullMode(appEnvObj interface{}) error {
 	appEnv := appEnvObj.(*appEnv)
-
 	go func() {
-		log.Println(http.ListenAndServe(":651", nil))
+		log.Println(http.ListenAndServe(fmt.Sprintf(":%s", appEnv.PProfPort), nil))
 	}()
 	switch appEnv.LogLevel {
 	case "debug":
@@ -263,7 +268,7 @@ func doFullMode(appEnvObj interface{}) error {
 	if err != nil {
 		return err
 	}
-	address = fmt.Sprintf("%s:%d", address, appEnv.Port)
+	address = fmt.Sprintf("%s:%d", address, appEnv.PeerPort)
 	sharder := shard.NewSharder(
 		etcdClientV2,
 		appEnv.NumShards,
@@ -350,7 +355,7 @@ func doFullMode(appEnvObj interface{}) error {
 	}
 	var eg errgroup.Group
 	eg.Go(func() error {
-		err := http.ListenAndServe(fmt.Sprintf(":%v", pach_http.HTTPPort), httpServer)
+		err := http.ListenAndServe(fmt.Sprintf(":%v", appEnv.HTTPPort), httpServer)
 		if err != nil {
 			log.Printf("error starting http server %v\n", err)
 		}
@@ -382,6 +387,7 @@ func doFullMode(appEnvObj interface{}) error {
 			},
 			grpcutil.ServeEnv{
 				GRPCPort: appEnv.Port,
+				PeerPort: appEnv.PeerPort,
 			},
 		)
 		if err != nil {

@@ -220,12 +220,15 @@ func getAddrAndExtraOptionsOnUserMachine(cfg *config.Config) (string, []Option, 
 	// 2) Get target address from global config if possible
 	if cfg != nil && cfg.V1 != nil && cfg.V1.PachdAddress != "" {
 		addr = cfg.V1.PachdAddress
-		// Also get cert info from config
-		serverCABytes, err := base64.StdEncoding.DecodeString(cfg.V1.ServerCAs)
-		if err != nil {
-			return nil, nil, fmt.Errorf("could not decode server CA certs in config: %v", err)
+		// Also get cert info from config (if set)
+		if cfg.V1.ServerCAs != "" {
+			serverCABytes, err := base64.StdEncoding.DecodeString(cfg.V1.ServerCAs)
+			if err != nil {
+				return nil, nil, fmt.Errorf("could not decode server CA certs in config: %v", err)
+			}
+			return cfg.V1.PachdAddress, WithAdditionalRootCAs(pemBytes), nil
 		}
-		return cfg.V1.PachdAddress, WithAdditionalRootCAs(pemBytes)
+		return cfg.V1.PachdAddress, nil, nil
 	}
 	// 3) Use default address if nothing else works
 	return "0.0.0.0:30650"
