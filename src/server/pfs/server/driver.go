@@ -165,7 +165,6 @@ func (d *driver) getPachClient(ctx context.Context) *client.APIClient {
 		if err != nil {
 			panic(fmt.Sprintf("could not intiailize Pachyderm client in driver: %v", err))
 		}
-
 	})
 	return d._pachClient.WithCtx(ctx)
 }

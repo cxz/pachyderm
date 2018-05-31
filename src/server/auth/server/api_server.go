@@ -126,7 +126,7 @@ func (a *apiServer) LogResp(request interface{}, response interface{}, err error
 func (a *apiServer) getPachClient() *client.APIClient {
 	a.pachClientOnce.Do(func() {
 		var err error
-		a.pachClient, err = client.NewFromAddress(a.address)
+		a.pachClient, err = client.NewFromAddress(a.address, client.WithAdditionalPachdCert())
 		if err != nil {
 			panic(err)
 		}

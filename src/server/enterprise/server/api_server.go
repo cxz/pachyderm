@@ -74,7 +74,7 @@ type apiServer struct {
 func (a *apiServer) getPachClient() *client.APIClient {
 	a.pachClientOnce.Do(func() {
 		var err error
-		a.pachClient, err = client.NewFromAddress(a.pachdAddress)
+		a.pachClient, err = client.NewFromAddress(a.pachdAddress, client.WithAdditionalPachdCert())
 		if err != nil {
 			panic(fmt.Sprintf("enterprise API failed to initialize pach client: %v", err))
 		}

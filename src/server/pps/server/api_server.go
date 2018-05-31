@@ -2704,7 +2704,7 @@ func (a *apiServer) updateJobState(stm col.STM, jobPtr *pps.EtcdJobInfo, state p
 func (a *apiServer) getPachClient() *client.APIClient {
 	a.pachClientOnce.Do(func() {
 		var err error
-		a.pachClient, err = client.NewFromAddress(a.address)
+		a.pachClient, err = client.NewFromAddress(a.address, client.WithAdditionalPachdCert())
 		if err != nil {
 			panic(fmt.Sprintf("pps failed to initialize pach client: %v", err))
 		}
