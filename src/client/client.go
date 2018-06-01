@@ -160,13 +160,23 @@ func WithMaxConcurrentStreams(streams uint) Option {
 }
 
 func addCertFromFile(pool *x509.CertPool, path string) error {
+	/* >>> */
+	fmt.Printf(">>> adding cert from %s\n", path)
+	/* >>> */
 	bytes, err := ioutil.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("could not read x509 cert from \"%s\": %v", path, err)
 	}
+	/* >>> */
+	fmt.Printf(">>> contents:\n%s\n", bytes)
+	/* >>> */
 	if ok := pool.AppendCertsFromPEM(bytes); !ok {
+		/* >>> */
+		fmt.Printf(">>> could not add %s to cert pool as PEM", path)
+		/* >>> */
 		return fmt.Errorf("could not add %s to cert pool as PEM", path)
 	}
+	fmt.Printf(">>> Success adding %s: returning nil\n", path)
 	return nil
 }
 
@@ -206,6 +216,11 @@ func WithAdditionalPachdCert() Option {
 			}
 			return addCertFromFile(settings.serverCAs, path.Join(grpcutil.TLSVolumePath, grpcutil.TLSCertFile))
 		}
+		/*>>>*/
+		_, err := os.Stat(grpcutil.TLSVolumePath)
+		fmt.Printf(">>> stat(%s) -> %v\n", grpcutil.TLSVolumePath, err)
+		/*>>>*/
+
 		return nil
 	}
 }
@@ -354,7 +369,8 @@ func (c *APIClient) connect() error {
 	}
 	clientConn, err := grpc.Dial(c.addr, dialOptions...)
 	if err != nil {
-		return grpcutil.ScrubGRPC(err)
+		fmt.Printf(">>> could not dial: %v\n", err)
+		return err
 	}
 	c.PfsAPIClient = pfs.NewAPIClient(clientConn)
 	c.PpsAPIClient = pps.NewAPIClient(clientConn)

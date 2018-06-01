@@ -168,57 +168,102 @@ func doSidecarMode(appEnvObj interface{}) error {
 		return err
 	}
 	address = fmt.Sprintf("%s:%d", address, appEnv.PeerPort)
-	pfsCacheSize, err := strconv.Atoi(appEnv.PFSCacheSize)
-	if err != nil {
-		return err
-	}
-	pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), int64(pfsCacheSize))
-	if err != nil {
-		return err
-	}
-	ppsAPIServer, err := pps_server.NewSidecarAPIServer(
-		etcdAddress,
-		path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
-		address,
-		appEnv.IAMRole,
-		reporter,
-	)
-	if err != nil {
-		return err
-	}
-	blockCacheBytes, err := units.RAMInBytes(appEnv.BlockCacheBytes)
-	if err != nil {
-		return err
-	}
-	blockAPIServer, err := pfs_server.NewBlockAPIServer(appEnv.StorageRoot, blockCacheBytes, appEnv.StorageBackend, etcdAddress)
-	if err != nil {
-		return err
-	}
-	healthServer := health.NewHealthServer()
-	authAPIServer, err := authserver.NewAuthServer(address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
-	if err != nil {
-		return err
-	}
-	enterpriseAPIServer, err := eprsserver.NewEnterpriseServer(address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.EnterpriseEtcdPrefix))
-	if err != nil {
-		return err
-	}
 	return grpcutil.Serve(
-		func(s *grpc.Server) {
-			pfsclient.RegisterAPIServer(s, pfsAPIServer)
-			pfsclient.RegisterObjectAPIServer(s, blockAPIServer)
-			ppsclient.RegisterAPIServer(s, ppsAPIServer)
-			healthclient.RegisterHealthServer(s, healthServer)
-			authclient.RegisterAPIServer(s, authAPIServer)
-			eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
-		},
-		grpcutil.ServeOptions{
-			Version:    version.Version,
+		grpcutil.ServerSpec{
+			Port:       appEnv.Port,
 			MaxMsgSize: grpcutil.MaxMsgSize,
+			func(s *grpc.Server) {
+				pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), int64(pfsCacheSize))
+				if err != nil {
+					return err
+				}
+				pfsclient.RegisterAPIServer(s, pfsAPIServer)
+
+				ppsAPIServer, err := pps_server.NewSidecarAPIServer(
+					etcdAddress,
+					path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
+					address,
+					appEnv.IAMRole,
+					reporter,
+				)
+				if err != nil {
+					return err
+				}
+				ppsclient.RegisterAPIServer(s, ppsAPIServer)
+
+				healthServer := health.NewHealthServer()
+				healthclient.RegisterHealthServer(s, healthServer)
+
+				authAPIServer, err := authserver.NewAuthServer(
+					address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
+				if err != nil {
+					return err
+				}
+				authclient.RegisterAPIServer(s, authAPIServer)
+
+				enterpriseAPIServer, err := eprsserver.NewEnterpriseServer(
+					address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.EnterpriseEtcdPrefix))
+				if err != nil {
+					return err
+				}
+				eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
+
+				versionpb.RegisterAPIServer(grpcServer, version.NewAPIServer(version.Version, version.APIServerOptions{}))
+			},
 		},
-		grpcutil.ServeEnv{
-			GRPCPort: appEnv.Port,
-			PeerPort: appEnv.PeerPort,
+		grpcutil.ServerSpec{
+			Port:       appEnv.PeerPort,
+			MaxMsgSize: grpcutil.MaxMsgSize,
+			func(s *grpc.Server) {
+				pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), int64(pfsCacheSize))
+				if err != nil {
+					return err
+				}
+				pfsclient.RegisterAPIServer(s, pfsAPIServer)
+
+				pfsCacheSize, err := strconv.Atoi(appEnv.PFSCacheSize)
+				if err != nil {
+					return err
+				}
+				blockCacheBytes, err := units.RAMInBytes(appEnv.BlockCacheBytes)
+				if err != nil {
+					return err
+				}
+				blockAPIServer, err := pfs_server.NewBlockAPIServer(appEnv.StorageRoot, blockCacheBytes, appEnv.StorageBackend, etcdAddress)
+				if err != nil {
+					return err
+				}
+				pfsclient.RegisterObjectAPIServer(s, blockAPIServer)
+
+				ppsAPIServer, err := pps_server.NewSidecarAPIServer(
+					etcdAddress,
+					path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
+					address,
+					appEnv.IAMRole,
+					reporter,
+				)
+				if err != nil {
+					return err
+				}
+				ppsclient.RegisterAPIServer(s, ppsAPIServer)
+
+				healthServer := health.NewHealthServer()
+				healthclient.RegisterHealthServer(s, healthServer)
+
+				authAPIServer, err := authserver.NewAuthServer(
+					address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
+				if err != nil {
+					return err
+				}
+				authclient.RegisterAPIServer(s, authAPIServer)
+
+				enterpriseAPIServer, err := eprsserver.NewEnterpriseServer(
+					address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.EnterpriseEtcdPrefix))
+				if err != nil {
+					return err
+				}
+				eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
+			},
 		},
 	)
 }
