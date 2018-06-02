@@ -116,7 +116,7 @@ const (
 )
 
 // newDriver is used to create a new Driver instance
-func newDriver(address string, etcdAddresses []string, etcdPrefix string, treeCacheSize int64) (*driver, error) {
+func newDriver(address string, etcdAddresses []string, etcdPrefix string, treeCache *lru.Cache) (*driver, error) {
 	etcdClient, err := etcd.New(etcd.Config{
 		Endpoints:   etcdAddresses,
 		DialOptions: client.DefaultDialOptions(),
@@ -124,12 +124,12 @@ func newDriver(address string, etcdAddresses []string, etcdPrefix string, treeCa
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to etcd: %v", err)
 	}
-	if treeCacheSize <= 0 {
-		treeCacheSize = defaultTreeCacheSize
-	}
-	treeCache, err := lru.New(int(treeCacheSize))
-	if err != nil {
-		return nil, fmt.Errorf("could not initialize treeCache: %v", err)
+	if treeCache == nil {
+		var err error
+		treeCache, err = lru.New(defaultTreeCacheSize)
+		if err != nil {
+			return nil, fmt.Errorf("could not initialize treeCache: %v", err)
+		}
 	}
 
 	d := &driver{
