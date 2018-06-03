@@ -18,6 +18,7 @@ import (
 	"github.com/pachyderm/pachyderm/src/client/pkg/grpcutil"
 	"github.com/pachyderm/pachyderm/src/client/pps"
 	"github.com/pachyderm/pachyderm/src/client/version"
+	"github.com/pachyderm/pachyderm/src/client/version/versionpb"
 	"github.com/pachyderm/pachyderm/src/server/pkg/cmdutil"
 	"github.com/pachyderm/pachyderm/src/server/pkg/ppsutil"
 	"github.com/pachyderm/pachyderm/src/server/worker"
@@ -183,16 +184,15 @@ func do(appEnvObj interface{}) error {
 	ready := make(chan error)
 	eg.Go(func() error {
 		return grpcutil.Serve(
-			func(s *grpc.Server) {
-				worker.RegisterWorkerServer(s, apiServer)
-				close(ready)
-			},
-			grpcutil.ServeOptions{
-				Version:    version.Version,
+			grpcutil.ServerSpec{
 				MaxMsgSize: grpcutil.MaxMsgSize,
-			},
-			grpcutil.ServeEnv{
-				GRPCPort: client.PPSWorkerPort,
+				Port:       client.PPSWorkerPort,
+				RegisterFunc: func(s *grpc.Server) error {
+					defer close(ready)
+					worker.RegisterWorkerServer(s, apiServer)
+					versionpb.RegisterAPIServer(s, version.NewAPIServer(version.Version, version.APIServerOptions{}))
+					return nil
+				},
 			},
 		)
 	})

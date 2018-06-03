@@ -9,9 +9,6 @@ import (
 	// "path"
 	"time"
 
-	"github.com/pachyderm/pachyderm/src/client/version"
-	"github.com/pachyderm/pachyderm/src/client/version/versionpb"
-
 	"google.golang.org/grpc"
 	// "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
@@ -44,14 +41,7 @@ type ServerSpec struct {
 	Port         uint16
 	MaxMsgSize   int
 	Cancel       chan struct{}
-	RegisterFunc func(*grpc.Server)
-}
-
-// grpc.ServerOption and
-func runServer(grpcServer *grpc.Server, options ServeOptions, port uint16) error {
-	if options.Version != nil {
-		versionpb.RegisterAPIServer(grpcServer, version.NewAPIServer(options.Version, version.APIServerOptions{}))
-	}
+	RegisterFunc func(*grpc.Server) error
 }
 
 // Serve serves stuff.
@@ -59,7 +49,7 @@ func Serve(
 	servers ...ServerSpec,
 ) (retErr error) {
 	for _, server := range servers {
-		if server.registerFunc == nil {
+		if server.RegisterFunc == nil {
 			return ErrMustSpecifyRegisterFunc
 		}
 		if server.Port == 0 {
@@ -94,7 +84,9 @@ func Serve(
 		// Might additionally contain TLS option
 		// publicServer := grpc.NewServer(publicOpts...)
 		GRPCServer := grpc.NewServer(peerOpts...)
-		server.RegisterFunc(GRPCServer)
+		if err := server.RegisterFunc(GRPCServer); err != nil {
+			return err
+		}
 		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", server.Port))
 		if err != nil {
 			return err

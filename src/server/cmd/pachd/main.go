@@ -24,6 +24,7 @@ import (
 	"github.com/pachyderm/pachyderm/src/client/pkg/shard"
 	ppsclient "github.com/pachyderm/pachyderm/src/client/pps"
 	"github.com/pachyderm/pachyderm/src/client/version"
+	"github.com/pachyderm/pachyderm/src/client/version/versionpb"
 	adminserver "github.com/pachyderm/pachyderm/src/server/admin/server"
 	authserver "github.com/pachyderm/pachyderm/src/server/auth/server"
 	deployserver "github.com/pachyderm/pachyderm/src/server/deploy"
@@ -42,6 +43,7 @@ import (
 	pps_server "github.com/pachyderm/pachyderm/src/server/pps/server"
 	"github.com/pachyderm/pachyderm/src/server/pps/server/githook"
 
+	"github.com/hashicorp/golang-lru"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
@@ -52,6 +54,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kube "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+)
+
+const (
+	defaultTreeCacheSize = 8
 )
 
 var mode string
@@ -168,63 +174,26 @@ func doSidecarMode(appEnvObj interface{}) error {
 		return err
 	}
 	address = fmt.Sprintf("%s:%d", address, appEnv.PeerPort)
+
+	pfsCacheSize, err := strconv.Atoi(appEnv.PFSCacheSize)
+	if err != nil {
+		return err
+	}
+	if pfsCacheSize == 0 {
+		pfsCacheSize = defaultTreeCacheSize
+	}
+	treeCache, err := lru.New(pfsCacheSize)
+	if err != nil {
+		return fmt.Errorf("could not initialize treeCache: %v", err)
+	}
+	// The sidecar only needs to serve traffic on the peer port, as it only serves
+	// traffic from the user container (the worker binary and occasionally user
+	// pipelines)
 	return grpcutil.Serve(
-		grpcutil.ServerSpec{
-			Port:       appEnv.Port,
-			MaxMsgSize: grpcutil.MaxMsgSize,
-			func(s *grpc.Server) {
-				pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), int64(pfsCacheSize))
-				if err != nil {
-					return err
-				}
-				pfsclient.RegisterAPIServer(s, pfsAPIServer)
-
-				ppsAPIServer, err := pps_server.NewSidecarAPIServer(
-					etcdAddress,
-					path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
-					address,
-					appEnv.IAMRole,
-					reporter,
-				)
-				if err != nil {
-					return err
-				}
-				ppsclient.RegisterAPIServer(s, ppsAPIServer)
-
-				healthServer := health.NewHealthServer()
-				healthclient.RegisterHealthServer(s, healthServer)
-
-				authAPIServer, err := authserver.NewAuthServer(
-					address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
-				if err != nil {
-					return err
-				}
-				authclient.RegisterAPIServer(s, authAPIServer)
-
-				enterpriseAPIServer, err := eprsserver.NewEnterpriseServer(
-					address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.EnterpriseEtcdPrefix))
-				if err != nil {
-					return err
-				}
-				eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
-
-				versionpb.RegisterAPIServer(grpcServer, version.NewAPIServer(version.Version, version.APIServerOptions{}))
-			},
-		},
 		grpcutil.ServerSpec{
 			Port:       appEnv.PeerPort,
 			MaxMsgSize: grpcutil.MaxMsgSize,
-			func(s *grpc.Server) {
-				pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), int64(pfsCacheSize))
-				if err != nil {
-					return err
-				}
-				pfsclient.RegisterAPIServer(s, pfsAPIServer)
-
-				pfsCacheSize, err := strconv.Atoi(appEnv.PFSCacheSize)
-				if err != nil {
-					return err
-				}
+			RegisterFunc: func(s *grpc.Server) error {
 				blockCacheBytes, err := units.RAMInBytes(appEnv.BlockCacheBytes)
 				if err != nil {
 					return err
@@ -235,6 +204,12 @@ func doSidecarMode(appEnvObj interface{}) error {
 				}
 				pfsclient.RegisterObjectAPIServer(s, blockAPIServer)
 
+				pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), treeCache)
+				if err != nil {
+					return err
+				}
+				pfsclient.RegisterAPIServer(s, pfsAPIServer)
+
 				ppsAPIServer, err := pps_server.NewSidecarAPIServer(
 					etcdAddress,
 					path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
@@ -246,9 +221,6 @@ func doSidecarMode(appEnvObj interface{}) error {
 					return err
 				}
 				ppsclient.RegisterAPIServer(s, ppsAPIServer)
-
-				healthServer := health.NewHealthServer()
-				healthclient.RegisterHealthServer(s, healthServer)
 
 				authAPIServer, err := authserver.NewAuthServer(
 					address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
@@ -263,6 +235,9 @@ func doSidecarMode(appEnvObj interface{}) error {
 					return err
 				}
 				eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
+
+				healthclient.RegisterHealthServer(s, health.NewHealthServer())
+				return nil
 			},
 		},
 	)
@@ -271,7 +246,7 @@ func doSidecarMode(appEnvObj interface{}) error {
 func doFullMode(appEnvObj interface{}) error {
 	appEnv := appEnvObj.(*appEnv)
 	go func() {
-		log.Println(http.ListenAndServe(fmt.Sprintf(":%s", appEnv.PProfPort), nil))
+		log.Println(http.ListenAndServe(fmt.Sprintf(":%d", appEnv.PProfPort), nil))
 	}()
 	switch appEnv.LogLevel {
 	case "debug":
@@ -296,7 +271,6 @@ func doFullMode(appEnvObj interface{}) error {
 	if err != nil {
 		return err
 	}
-
 	clusterID, err := getClusterID(etcdClientV3)
 	if err != nil {
 		return err
@@ -324,10 +298,6 @@ func doFullMode(appEnvObj interface{}) error {
 			log.Printf("error from sharder.AssignRoles: %s", grpcutil.ScrubGRPC(err))
 		}
 	}()
-	pfsCacheSize, err := strconv.Atoi(appEnv.PFSCacheSize)
-	if err != nil {
-		return err
-	}
 	router := shard.NewRouter(
 		sharder,
 		grpcutil.NewDialer(
@@ -335,72 +305,31 @@ func doFullMode(appEnvObj interface{}) error {
 		),
 		address,
 	)
-	cacheServer := cache_server.NewCacheServer(router, appEnv.NumShards)
-	pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), int64(pfsCacheSize))
+	pfsCacheSize, err := strconv.Atoi(appEnv.PFSCacheSize)
 	if err != nil {
 		return err
+	}
+	if pfsCacheSize == 0 {
+		pfsCacheSize = defaultTreeCacheSize
+	}
+	treeCache, err := lru.New(pfsCacheSize)
+	if err != nil {
+		return fmt.Errorf("could not initialize treeCache: %v", err)
 	}
 	kubeNamespace := getNamespace()
-	ppsAPIServer, err := pps_server.NewAPIServer(
-		etcdAddress,
-		path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
-		address,
-		kubeClient,
-		kubeNamespace,
-		appEnv.WorkerImage,
-		appEnv.WorkerSidecarImage,
-		appEnv.WorkerImagePullPolicy,
-		appEnv.StorageRoot,
-		appEnv.StorageBackend,
-		appEnv.StorageHostPath,
-		appEnv.IAMRole,
-		appEnv.ImagePullSecret,
-		appEnv.NoExposeDockerSocket,
-		reporter,
-	)
-	if err != nil {
-		return err
-	}
-	go func() {
-		if err := sharder.RegisterFrontends(nil, address, []shard.Frontend{cacheServer}); err != nil {
-			log.Printf("error from sharder.RegisterFrontend %s", grpcutil.ScrubGRPC(err))
-		}
-	}()
-	go func() {
-		if err := sharder.Register(nil, address, []shard.Server{cacheServer}); err != nil {
-			log.Printf("error from sharder.Register %s", grpcutil.ScrubGRPC(err))
-		}
-	}()
-	blockCacheBytes, err := units.RAMInBytes(appEnv.BlockCacheBytes)
-	if err != nil {
-		return err
-	}
-	blockAPIServer, err := pfs_server.NewBlockAPIServer(appEnv.StorageRoot, blockCacheBytes, appEnv.StorageBackend, etcdAddress)
-	if err != nil {
-		return err
-	}
+	publicHealthServer := health.NewHealthServer()
+	peerHealthServer := health.NewHealthServer()
 
-	authAPIServer, err := authserver.NewAuthServer(address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
-	if err != nil {
-		return err
-	}
-	enterpriseAPIServer, err := eprsserver.NewEnterpriseServer(address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.EnterpriseEtcdPrefix))
-	if err != nil {
-		return err
-	}
-	adminAPIServer := adminserver.NewAPIServer(address, &adminclient.ClusterInfo{clusterID})
-
-	healthServer := health.NewHealthServer()
-
-	deployServer := deployserver.NewDeployServer(kubeClient, kubeNamespace)
-
-	httpServer, err := pach_http.NewHTTPServer(address)
-	if err != nil {
-		return err
-	}
+	// TODO(msteffen): We should not use an errorgroup here. Errorgroup waits
+	// until *all* goroutines have run and then returns, but we want pachd to halt
+	// if *any* of these serve functions returns an arror.
 	var eg errgroup.Group
 	eg.Go(func() error {
-		err := http.ListenAndServe(fmt.Sprintf(":%v", appEnv.HTTPPort), httpServer)
+		httpServer, err := pach_http.NewHTTPServer(address)
+		if err != nil {
+			return err
+		}
+		err = http.ListenAndServe(fmt.Sprintf(":%v", appEnv.HTTPPort), httpServer)
 		if err != nil {
 			log.Printf("error starting http server %v\n", err)
 		}
@@ -414,25 +343,67 @@ func doFullMode(appEnvObj interface{}) error {
 		return err
 	})
 	eg.Go(func() error {
+		http.Handle("/metrics", promhttp.Handler())
+		err := http.ListenAndServe(fmt.Sprintf(":%v", assets.PrometheusPort), nil)
+		if err != nil {
+			log.Printf("error starting prometheus server %v\n", err)
+		}
+		return err
+	})
+	eg.Go(func() error {
 		err := grpcutil.Serve(
-			func(s *grpc.Server) {
-				healthclient.RegisterHealthServer(s, healthServer)
-				pfsclient.RegisterAPIServer(s, pfsAPIServer)
-				pfsclient.RegisterObjectAPIServer(s, blockAPIServer)
-				ppsclient.RegisterAPIServer(s, ppsAPIServer)
-				cache_pb.RegisterGroupCacheServer(s, cacheServer)
-				authclient.RegisterAPIServer(s, authAPIServer)
-				eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
-				deployclient.RegisterAPIServer(s, deployServer)
-				adminclient.RegisterAPIServer(s, adminAPIServer)
-			},
-			grpcutil.ServeOptions{
-				Version:    version.Version,
+			grpcutil.ServerSpec{
+				Port:       appEnv.Port,
 				MaxMsgSize: grpcutil.MaxMsgSize,
-			},
-			grpcutil.ServeEnv{
-				GRPCPort: appEnv.Port,
-				PeerPort: appEnv.PeerPort,
+				RegisterFunc: func(s *grpc.Server) error {
+					pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), treeCache)
+					if err != nil {
+						return err
+					}
+					pfsclient.RegisterAPIServer(s, pfsAPIServer)
+
+					ppsAPIServer, err := pps_server.NewAPIServer(
+						etcdAddress,
+						path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
+						address,
+						kubeClient,
+						kubeNamespace,
+						appEnv.WorkerImage,
+						appEnv.WorkerSidecarImage,
+						appEnv.WorkerImagePullPolicy,
+						appEnv.StorageRoot,
+						appEnv.StorageBackend,
+						appEnv.StorageHostPath,
+						appEnv.IAMRole,
+						appEnv.ImagePullSecret,
+						appEnv.NoExposeDockerSocket,
+						reporter,
+					)
+					if err != nil {
+						return err
+					}
+					ppsclient.RegisterAPIServer(s, ppsAPIServer)
+
+					authAPIServer, err := authserver.NewAuthServer(
+						address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
+					if err != nil {
+						return err
+					}
+					authclient.RegisterAPIServer(s, authAPIServer)
+
+					enterpriseAPIServer, err := eprsserver.NewEnterpriseServer(
+						address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.EnterpriseEtcdPrefix))
+					if err != nil {
+						return err
+					}
+					eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
+
+					deployclient.RegisterAPIServer(s, deployserver.NewDeployServer(kubeClient, kubeNamespace))
+					adminclient.RegisterAPIServer(s, adminserver.NewAPIServer(address, &adminclient.ClusterInfo{clusterID}))
+					healthclient.RegisterHealthServer(s, publicHealthServer)
+					versionpb.RegisterAPIServer(s, version.NewAPIServer(version.Version, version.APIServerOptions{}))
+					return nil
+				},
 			},
 		)
 		if err != nil {
@@ -441,17 +412,97 @@ func doFullMode(appEnvObj interface{}) error {
 		return err
 	})
 	eg.Go(func() error {
-		http.Handle("/metrics", promhttp.Handler())
-		err := http.ListenAndServe(fmt.Sprintf(":%v", assets.PrometheusPort), nil)
+		err := grpcutil.Serve(
+			grpcutil.ServerSpec{
+				Port:       appEnv.PeerPort,
+				MaxMsgSize: grpcutil.MaxMsgSize,
+				RegisterFunc: func(s *grpc.Server) error {
+					cacheServer := cache_server.NewCacheServer(router, appEnv.NumShards)
+					go func() {
+						if err := sharder.RegisterFrontends(nil, address, []shard.Frontend{cacheServer}); err != nil {
+							log.Printf("error from sharder.RegisterFrontend %s", grpcutil.ScrubGRPC(err))
+						}
+					}()
+					go func() {
+						if err := sharder.Register(nil, address, []shard.Server{cacheServer}); err != nil {
+							log.Printf("error from sharder.Register %s", grpcutil.ScrubGRPC(err))
+						}
+					}()
+					cache_pb.RegisterGroupCacheServer(s, cacheServer)
+
+					blockCacheBytes, err := units.RAMInBytes(appEnv.BlockCacheBytes)
+					if err != nil {
+						return err
+					}
+					blockAPIServer, err := pfs_server.NewBlockAPIServer(
+						appEnv.StorageRoot, blockCacheBytes, appEnv.StorageBackend, etcdAddress)
+					if err != nil {
+						return err
+					}
+					pfsclient.RegisterObjectAPIServer(s, blockAPIServer)
+
+					pfsAPIServer, err := pfs_server.NewAPIServer(
+						address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), treeCache)
+					if err != nil {
+						return err
+					}
+					pfsclient.RegisterAPIServer(s, pfsAPIServer)
+
+					ppsAPIServer, err := pps_server.NewAPIServer(
+						etcdAddress,
+						path.Join(appEnv.EtcdPrefix, appEnv.PPSEtcdPrefix),
+						address,
+						kubeClient,
+						kubeNamespace,
+						appEnv.WorkerImage,
+						appEnv.WorkerSidecarImage,
+						appEnv.WorkerImagePullPolicy,
+						appEnv.StorageRoot,
+						appEnv.StorageBackend,
+						appEnv.StorageHostPath,
+						appEnv.IAMRole,
+						appEnv.ImagePullSecret,
+						appEnv.NoExposeDockerSocket,
+						reporter,
+					)
+					if err != nil {
+						return err
+					}
+					ppsclient.RegisterAPIServer(s, ppsAPIServer)
+
+					authAPIServer, err := authserver.NewAuthServer(
+						address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.AuthEtcdPrefix))
+					if err != nil {
+						return err
+					}
+					authclient.RegisterAPIServer(s, authAPIServer)
+
+					enterpriseAPIServer, err := eprsserver.NewEnterpriseServer(
+						address, etcdAddress, path.Join(appEnv.EtcdPrefix, appEnv.EnterpriseEtcdPrefix))
+					if err != nil {
+						return err
+					}
+					eprsclient.RegisterAPIServer(s, enterpriseAPIServer)
+
+					deployclient.RegisterAPIServer(s, deployserver.NewDeployServer(kubeClient, kubeNamespace))
+					healthclient.RegisterHealthServer(s, peerHealthServer)
+					versionpb.RegisterAPIServer(s, version.NewAPIServer(version.Version, version.APIServerOptions{}))
+					return nil
+				},
+			},
+		)
 		if err != nil {
-			log.Printf("error starting prometheus server %v\n", err)
+			log.Printf("error starting grpc server %v\n", err)
 		}
 		return err
 	})
 	if err := migrate(address, kubeClient); err != nil {
 		return err
 	}
-	healthServer.Ready()
+	// TODO(msteffen): Is it really necessary to indicate that the peer service is
+	// healthy? Presumably migrate() will call the peer service no matter what.
+	publicHealthServer.Ready()
+	peerHealthServer.Ready()
 	return eg.Wait()
 }
 
