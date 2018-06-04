@@ -32,9 +32,6 @@ type appEnv struct {
 	// Address of etcd, so that worker can write its own IP there for discoverh
 	EtcdAddress string `env:"ETCD_PORT_2379_TCP_ADDR,required"`
 
-	// Address for connecting to pachd (so this can download input data)
-	PachdAddress string `env:"PACHD_PORT_650_TCP_ADDR,required"`
-
 	// Prefix in etcd for all pachd-related records
 	PPSPrefix string `env:"PPS_ETCD_PREFIX,required"`
 
@@ -153,7 +150,7 @@ func do(appEnvObj interface{}) error {
 	appEnv := appEnvObj.(*appEnv)
 
 	// Construct a client that connects to the sidecar.
-	pachClient, err := client.NewFromAddress("localhost:650")
+	pachClient, err := client.NewFromAddress("localhost:653")
 	if err != nil {
 		return fmt.Errorf("error constructing pachClient: %v", err)
 	}
