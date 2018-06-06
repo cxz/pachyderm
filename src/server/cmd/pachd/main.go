@@ -353,8 +353,9 @@ func doFullMode(appEnvObj interface{}) error {
 	eg.Go(func() error {
 		err := grpcutil.Serve(
 			grpcutil.ServerSpec{
-				Port:       appEnv.Port,
-				MaxMsgSize: grpcutil.MaxMsgSize,
+				Port:                 appEnv.Port,
+				MaxMsgSize:           grpcutil.MaxMsgSize,
+				PublicPortTLSAllowed: true,
 				RegisterFunc: func(s *grpc.Server) error {
 					pfsAPIServer, err := pfs_server.NewAPIServer(address, []string{etcdAddress}, path.Join(appEnv.EtcdPrefix, appEnv.PFSEtcdPrefix), treeCache)
 					if err != nil {

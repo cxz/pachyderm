@@ -194,6 +194,7 @@ func WithRootCAs(path string) Option {
 // given base64-encoded, signed x509 certificates as root certificates.
 // Introduced to pass certs in the Pachyderm config
 func WithAdditionalRootCAs(pemBytes []byte) Option {
+	fmt.Printf(">>> trusting root CA: %s\n", pemBytes)
 	return func(settings *clientSettings) error {
 		// append certs from config
 		if ok := settings.serverCAs.AppendCertsFromPEM(pemBytes); !ok {

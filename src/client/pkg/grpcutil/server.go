@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"math"
 	"net"
-	// "os"
-	// "path"
+	"os"
+	"path"
 	"time"
 
 	"google.golang.org/grpc"
-	// "google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -42,6 +44,18 @@ type ServerSpec struct {
 	MaxMsgSize   int
 	Cancel       chan struct{}
 	RegisterFunc func(*grpc.Server) error
+
+	// If set, grpcutil may enable TLS.  This should be set for public ports that
+	// serve GRPC services to 3rd party clients.
+	//
+	// If set, the criterion for actually serving over TLS is:
+	// if a signed TLS cert and corresponding private key in 'TLSVolumePath',
+	// this will serve GRPC traffic over TLS. If either are missing this will
+	// serve GRPC traffic over unencrypted HTTP,
+	//
+	// TODO make the TLS cert and key path a parameter, as pachd will need
+	// multiple certificates for multiple ports
+	PublicPortTLSAllowed bool
 }
 
 // Serve serves stuff.
@@ -55,7 +69,7 @@ func Serve(
 		if server.Port == 0 {
 			return ErrMustSpecifyPort
 		}
-		peerOpts := []grpc.ServerOption{
+		opts := []grpc.ServerOption{
 			grpc.MaxConcurrentStreams(math.MaxUint32),
 			grpc.MaxRecvMsgSize(server.MaxMsgSize),
 			grpc.MaxSendMsgSize(server.MaxMsgSize),
@@ -64,26 +78,33 @@ func Serve(
 				PermitWithoutStream: true,
 			}),
 		}
-		// var publicOpts []grpc.ServerOption
-		// fmt.Printf(">>> Deciding whether to serve over TLS\n")
-		// if _, err := os.Stat(TLSVolumePath); err == nil {
-		// 	certPath := path.Join(TLSVolumePath, TLSCertFile)
-		// 	keyPath := path.Join(TLSVolumePath, TLSKeyFile)
-		// 	fmt.Printf(">>> Serving over TLS\n")
-		// 	transportCreds, err := credentials.NewServerTLSFromFile(certPath, keyPath)
-		// 	if err != nil {
-		// 		fmt.Printf(">>> Could not build transport creds: %v\n", err)
-		// 		return fmt.Errorf("couldn't build transport creds: %v", err)
-		// 	}
-		// 	fmt.Printf(">>> transport creds built successfully\n", err)
-		// 	publicOpts = append(peerOpts, grpc.Creds(transportCreds))
-		// } else {
-		// 	publicOpts = peerOpts
-		// }
+		fmt.Printf(">>> Deciding whether to serve over TLS\n")
+		if server.PublicPortTLSAllowed {
+			// Validate environment
+			certPath := path.Join(TLSVolumePath, TLSCertFile)
+			keyPath := path.Join(TLSVolumePath, TLSKeyFile)
+			_, certPathStatErr := os.Stat(certPath)
+			_, keyPathStatErr := os.Stat(keyPath)
+			if certPathStatErr != nil {
+				log.Warnf("TLS enabled but could not stat private key at %s: %e", certPath, certPathStatErr)
+			} else if keyPathStatErr != nil {
+				log.Warnf("TLS enabled but could not stat private key at %s: %e", certPath, keyPathStatErr)
+			} else {
+				// Read TLS cert and key
+				fmt.Printf(">>> Serving over TLS\n")
+				transportCreds, err := credentials.NewServerTLSFromFile(certPath, keyPath)
+				if err != nil {
+					fmt.Printf(">>> Could not build transport creds: %v\n", err)
+					return fmt.Errorf("couldn't build transport creds: %v", err)
+				}
+				fmt.Printf(">>> transport creds built successfully\n", err)
+				opts = append(opts, grpc.Creds(transportCreds))
+			}
+		}
 
 		// Might additionally contain TLS option
 		// publicServer := grpc.NewServer(publicOpts...)
-		GRPCServer := grpc.NewServer(peerOpts...)
+		GRPCServer := grpc.NewServer(opts...)
 		if err := server.RegisterFunc(GRPCServer); err != nil {
 			return err
 		}
